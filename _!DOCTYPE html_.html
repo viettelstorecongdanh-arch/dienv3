@@ -3,31 +3,28 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Docx Auto-Fill Pro (Fixed Export + JSON)</title>
+    <title>Docx Auto-Fill Pro (Super Stable)</title>
     
-    <!-- 1. THƯ VIỆN (CDN Ổn định) -->
+    <!-- 1. THƯ VIỆN REACT & UI -->
     <script crossorigin src="https://unpkg.com/react@17/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@17/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
 
-    <!-- Xử lý Word -->
+    <!-- 2. THƯ VIỆN XỬ LÝ WORD (Bản ổn định nhất) -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/docxtemplater/3.29.0/docxtemplater.js"></script>
     <script src="https://unpkg.com/pizzip@3.1.1/dist/pizzip.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <!-- Preview -->
     <script src="https://unpkg.com/docx-preview@0.1.15/dist/docx-preview.js"></script>
 
     <style>
-        body { background: #f8fafc; font-family: 'Segoe UI', sans-serif; }
-        /* Tab Styles */
-        .tab-btn { padding: 8px 16px; font-weight: bold; border-radius: 8px 8px 0 0; border: 1px solid transparent; cursor: pointer; }
-        .tab-active { background: white; border-color: #e2e8f0; border-bottom-color: white; color: #2563eb; }
-        .tab-inactive { background: #f1f5f9; color: #64748b; }
-        .input-field { width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px; outline: none; }
-        .input-field:focus { border-color: #3b82f6; ring: 2px; }
-        .preview-container { background: white; min-height: 297mm; width: 100%; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        body { background: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        .tab-active { border-bottom: 2px solid #2563eb; color: #2563eb; background: #eff6ff; }
+        .tab-inactive { color: #64748b; hover:bg-gray-50; }
+        .input-std { width: 100%; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; outline: none; font-size: 14px; transition: 0.2s; }
+        .input-std:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,0.2); }
+        .btn { transition: all 0.2s; active:scale-95; }
     </style>
 </head>
 <body>
@@ -38,248 +35,276 @@
 
         function App() {
             // --- STATE ---
-            const [activeTab, setActiveTab] = useState('form'); // 'form' hoặc 'json'
+            const [activeTab, setActiveTab] = useState('form');
             const [file, setFile] = useState(null);
             const [fileBuffer, setFileBuffer] = useState(null);
             const [loading, setLoading] = useState(false);
+            const [msg, setMsg] = useState({ text: '', type: '' }); // type: success/error
             
-            // Dữ liệu Form
+            // Data Input
             const [form, setForm] = useState({ MA_KH: '', TEN_KH: '', SO_TIEN: '', NOI_DUNG: '', SO_TIEN_CHU: '', SO_TIEN_FMT: '' });
-            
-            // Dữ liệu JSON Input
             const [jsonStr, setJsonStr] = useState('');
 
-            // Kết quả
+            // Outputs
             const [previewBlob, setPreviewBlob] = useState(null);
-            const [zipBlob, setZipBlob] = useState(null); // Cho batch export
-            const [msg, setMsg] = useState('');
+            const [downloadData, setDownloadData] = useState(null); // { blob, name }
             const previewRef = useRef(null);
 
-            // --- 1. XỬ LÝ TIỀN TỆ (Làm tròn + Đọc số) ---
+            // --- 1. LOGIC TIỀN TỆ (Làm tròn + Format) ---
             const processMoney = (val) => {
                 if (!val) return { raw: 0, fmt: '', text: '' };
                 let num = parseFloat(val);
                 if (isNaN(num)) return { raw: 0, fmt: val, text: '' };
 
-                // Làm tròn lên hàng nghìn (54321 -> 55000)
+                // Làm tròn lên hàng nghìn (VD: 54321 -> 55000)
                 num = Math.ceil(num / 1000) * 1000;
                 
                 const fmt = num.toLocaleString('vi-VN');
-                const text = `(Bằng chữ: ... đồng)`; // Placeholder đơn giản
+                const text = `(Bằng chữ: ... đồng)`; 
                 return { raw: num, fmt, text };
             };
 
-            const handleMoneyInput = (e) => {
+            const handleMoneyChange = (e) => {
                 const val = e.target.value;
                 const { fmt, text } = processMoney(val);
-                setForm({ ...form, SO_TIEN: val, SO_TIEN_FMT: fmt, SO_TIEN_CHU: text });
+                setForm(prev => ({ ...prev, SO_TIEN: val, SO_TIEN_FMT: fmt, SO_TIEN_CHU: text }));
             };
 
-            // --- 2. XỬ LÝ FILE ---
+            // --- 2. XỬ LÝ FILE MẪU ---
             const handleFile = (e) => {
                 const f = e.target.files[0];
-                if (f) {
-                    setFile(f);
-                    const reader = new FileReader();
-                    reader.readAsArrayBuffer(f); // Chuẩn nhất cho PizZip mới
-                    reader.onload = (evt) => {
+                if (!f) return;
+                
+                // Reset state
+                setMsg({ text: '⏳ Đang đọc file...', type: 'info' });
+                setFile(f);
+                setPreviewBlob(null);
+                setDownloadData(null);
+                if(previewRef.current) previewRef.current.innerHTML = '';
+
+                const reader = new FileReader();
+                reader.readAsArrayBuffer(f);
+                reader.onload = (evt) => {
+                    if(evt.target.result && evt.target.result.byteLength > 0) {
                         setFileBuffer(evt.target.result);
-                        setMsg("✅ Đã tải file mẫu");
-                    };
-                }
+                        setMsg({ text: `✅ Đã tải: ${f.name} (${(f.size/1024).toFixed(1)} KB)`, type: 'success' });
+                    } else {
+                        setMsg({ text: '❌ File lỗi hoặc rỗng!', type: 'error' });
+                    }
+                };
+                reader.onerror = () => setMsg({ text: '❌ Lỗi đọc file', type: 'error' });
             };
 
-            // --- 3. CORE LOGIC (Tạo file) ---
+            // --- 3. TẠO FILE (Generate) ---
             const generate = async () => {
-                if (!fileBuffer) return alert("Chưa chọn file mẫu!");
-                setLoading(true); setMsg("⏳ Đang xử lý...");
-                setPreviewBlob(null); setZipBlob(null);
+                if (!fileBuffer) return setMsg({ text: '⚠️ Chưa chọn file mẫu!', type: 'error' });
+                
+                setLoading(true);
+                setMsg({ text: '⚙️ Đang xử lý...', type: 'info' });
+                setPreviewBlob(null);
+                setDownloadData(null);
 
-                // Delay UI
-                await new Promise(r => setTimeout(r, 100));
+                // Delay nhẹ để UI kịp render loading
+                await new Promise(r => setTimeout(r, 50));
 
                 try {
                     // A. Chuẩn bị dữ liệu
                     let dataList = [];
-                    
                     if (activeTab === 'form') {
-                        // Lấy data từ form
+                        // Dữ liệu từ Form
                         const { fmt, text } = processMoney(form.SO_TIEN);
-                        dataList = [{
-                            ...form,
-                            SO_TIEN: fmt, // Dùng số đã format
-                            SO_TIEN_CHU: text
-                        }];
+                        dataList = [{ ...form, SO_TIEN: fmt, SO_TIEN_CHU: text }];
                     } else {
-                        // Lấy data từ JSON
-                        if (!jsonStr.trim()) throw new Error("JSON trống!");
+                        // Dữ liệu từ JSON
+                        if (!jsonStr.trim()) throw new Error("Ô nhập JSON đang trống!");
                         try {
                             const parsed = JSON.parse(jsonStr);
                             dataList = Array.isArray(parsed) ? parsed : [parsed];
                         } catch (e) {
-                            throw new Error("JSON sai cú pháp: " + e.message);
+                            throw new Error("JSON sai cú pháp (Kiểm tra dấu ngoặc, dấu phẩy)");
                         }
                     }
 
-                    // B. Xử lý Docxtemplater
-                    const zip = new JSZip(); // Cho file zip kết quả
-                    let firstBlob = null;
+                    // B. Xử lý Template (PizZip + Docxtemplater)
+                    const zip = new JSZip(); // Dùng để nén nếu nhiều file
+                    let firstDocBlob = null; // Để preview
 
-                    dataList.forEach((item, index) => {
-                        // Xử lý tiền cho JSON data (nếu chưa có)
+                    dataList.forEach((item, idx) => {
+                        // Xử lý tiền cho item trong JSON nếu cần
                         if (item.SO_TIEN && typeof item.SO_TIEN === 'number') {
                             const { fmt, text } = processMoney(item.SO_TIEN);
                             item.SO_TIEN = fmt;
-                            if (!item.SO_TIEN_CHU) item.SO_TIEN_CHU = text;
+                            if(!item.SO_TIEN_CHU) item.SO_TIEN_CHU = text;
                         }
 
                         const pzip = new PizZip(fileBuffer);
                         const doc = new window.docxtemplater(pzip, { paragraphLoop: true, linebreaks: true });
-                        doc.render(item);
                         
+                        doc.render(item);
+
                         const blob = doc.getZip().generate({
                             type: "blob",
                             mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                         });
 
-                        const fileName = `${item.MA_KH || 'Doc'}_${index+1}.docx`;
+                        const fname = `${item.MA_KH || 'Doc'}_${idx+1}.docx`;
                         
-                        if (index === 0) firstBlob = blob; // Để preview file đầu tiên
-                        zip.file(fileName, blob); // Thêm vào zip
+                        if (idx === 0) firstDocBlob = blob; // Lưu file đầu để preview
+                        zip.file(fname, blob); // Thêm vào zip
                     });
 
-                    // C. Kết quả
+                    // C. Chuẩn bị Download Data
                     if (dataList.length === 1) {
-                        setPreviewBlob(firstBlob); // Chế độ file đơn
+                        setDownloadData({ blob: firstDocBlob, name: `${dataList[0].MA_KH || 'KetQua'}.docx` });
                     } else {
-                        setPreviewBlob(firstBlob); // Vẫn preview file đầu
-                        const content = await zip.generateAsync({ type: "blob" });
-                        setZipBlob(content); // Chế độ file zip
+                        const zipContent = await zip.generateAsync({ type: "blob" });
+                        setDownloadData({ blob: zipContent, name: "Ket_Qua_Hang_Loat.zip" });
                     }
 
                     // D. Render Preview
-                    if (previewRef.current && firstBlob) {
-                        await window.docx.renderAsync(firstBlob, previewRef.current);
+                    if (firstDocBlob && previewRef.current) {
+                        await window.docx.renderAsync(firstDocBlob, previewRef.current);
                     }
-                    
-                    setMsg(`✅ Đã tạo ${dataList.length} file thành công!`);
+
+                    setMsg({ text: `✅ Thành công! Đã tạo ${dataList.length} file.`, type: 'success' });
 
                 } catch (err) {
                     console.error(err);
-                    alert("Lỗi: " + err.message);
-                    setMsg("❌ Lỗi: " + err.message);
+                    setMsg({ text: `❌ Lỗi: ${err.message}`, type: 'error' });
                 } finally {
                     setLoading(false);
                 }
             };
 
-            // --- 4. EXPORT THỦ CÔNG (Fallback) ---
-            const download = () => {
-                const blob = zipBlob || previewBlob;
-                if (!blob) return;
-                
-                const name = zipBlob ? "Ket_Qua_In.zip" : `${form.MA_KH || 'Document'}.docx`;
-                
-                // Cách 1: Dùng FileSaver
+            // --- 4. TẢI XUỐNG (FORCE DOWNLOAD) ---
+            const forceDownload = () => {
+                if (!downloadData) return;
                 try {
-                    window.saveAs(blob, name);
+                    // Tạo thẻ a ảo để click -> Cách này trình duyệt không chặn được nếu user click
+                    const url = window.URL.createObjectURL(downloadData.blob);
+                    const link = document.createElement('a');
+                    link.href = url;
+                    link.setAttribute('download', downloadData.name);
+                    document.body.appendChild(link);
+                    link.click();
+                    
+                    // Cleanup
+                    setTimeout(() => {
+                        document.body.removeChild(link);
+                        window.URL.revokeObjectURL(url);
+                    }, 100);
                 } catch (e) {
-                    // Cách 2: Fallback thẻ A (nếu FileSaver lỗi)
-                    console.warn("FileSaver failed, trying fallback...");
-                    const url = window.URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = name;
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    window.URL.revokeObjectURL(url);
+                    alert("Lỗi tải xuống: " + e.message);
                 }
             };
 
             return (
-                <div className="max-w-7xl mx-auto p-4 flex flex-col md:flex-row gap-6 h-screen overflow-hidden">
-                    
-                    {/* LEFT: INPUTS */}
-                    <div className="w-full md:w-5/12 bg-white flex flex-col border rounded-xl shadow-lg h-full">
-                        <div className="p-4 border-b bg-slate-50">
-                            <h1 className="text-xl font-bold text-blue-700">⚡ Auto-Fill Pro</h1>
+                <div className="flex h-screen overflow-hidden">
+                    {/* LEFT SIDEBAR: Controls */}
+                    <div className="w-full md:w-[450px] bg-white border-r flex flex-col shadow-xl z-10 shrink-0">
+                        <div className="p-5 border-b bg-slate-50">
+                            <h1 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                                ⚡ Docx Auto-Fill <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">Pro</span>
+                            </h1>
                         </div>
 
-                        <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                            {/* Upload */}
-                            <div className="border-2 border-dashed border-blue-300 bg-blue-50 rounded-lg p-6 text-center">
-                                <input type="file" accept=".docx" onChange={handleFile} className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:bg-blue-600 file:text-white hover:file:bg-blue-700"/>
-                                <div className="mt-2 text-xs font-bold text-green-600">{file ? file.name : ""}</div>
+                        <div className="flex-1 overflow-y-auto p-5 space-y-5">
+                            {/* 1. Upload */}
+                            <div className={`border-2 border-dashed rounded-xl p-6 text-center transition-colors ${file ? 'border-green-400 bg-green-50' : 'border-slate-300 hover:border-blue-400'}`}>
+                                <input type="file" accept=".docx" onChange={handleFile} className="hidden" id="fileUpload"/>
+                                <label htmlFor="fileUpload" className="cursor-pointer block">
+                                    <div className="text-3xl mb-2">{file ? '📄' : '📂'}</div>
+                                    <div className="font-medium text-sm text-slate-700">{file ? file.name : "Nhấn để chọn file mẫu (.docx)"}</div>
+                                </label>
                             </div>
 
-                            {/* Tabs */}
+                            {/* 2. Tabs */}
                             <div className="flex border-b border-slate-200">
-                                <button onClick={()=>setActiveTab('form')} className={`tab-btn ${activeTab==='form'?'tab-active':'tab-inactive'}`}>📝 Nhập Form</button>
-                                <button onClick={()=>setActiveTab('json')} className={`tab-btn ${activeTab==='json'?'tab-active':'tab-inactive'}`}>Codes JSON</button>
+                                <button onClick={()=>setActiveTab('form')} className={`flex-1 py-2 text-sm font-bold ${activeTab==='form' ? 'tab-active' : 'tab-inactive'}`}>Nhập Form</button>
+                                <button onClick={()=>setActiveTab('json')} className={`flex-1 py-2 text-sm font-bold ${activeTab==='json' ? 'tab-active' : 'tab-inactive'}`}>Dán JSON</button>
                             </div>
 
-                            {/* Tab Content */}
-                            <div className="bg-white rounded-b-lg min-h-[250px]">
+                            {/* 3. Inputs */}
+                            <div className="bg-white min-h-[200px]">
                                 {activeTab === 'form' && (
-                                    <div className="space-y-3 p-2 animate-in fade-in">
-                                        <div className="grid grid-cols-2 gap-2">
+                                    <div className="space-y-3 pt-3 animate-in fade-in">
+                                        <div className="grid grid-cols-2 gap-3">
                                             <div>
-                                                <label className="text-xs font-bold text-gray-500">Mã HĐ</label>
-                                                <input className="input-field" value={form.MA_KH} onChange={e=>setForm({...form, MA_KH:e.target.value})} placeholder="HD001"/>
+                                                <label className="block text-xs font-bold text-slate-500 mb-1">Mã HĐ</label>
+                                                <input className="input-std" value={form.MA_KH} onChange={e=>setForm({...form, MA_KH:e.target.value})} placeholder="HD001" />
                                             </div>
                                             <div>
-                                                <label className="text-xs font-bold text-gray-500">Số Tiền (Số)</label>
-                                                <input type="number" className="input-field text-blue-600 font-bold" value={form.SO_TIEN} onChange={handleMoneyInput} placeholder="50000"/>
+                                                <label className="block text-xs font-bold text-slate-500 mb-1">Số tiền (Số)</label>
+                                                <input type="number" className="input-std font-bold text-blue-600" value={form.SO_TIEN} onChange={handleMoneyChange} placeholder="50000" />
                                             </div>
                                         </div>
                                         <div>
-                                            <label className="text-xs font-bold text-gray-500">Họ Tên</label>
-                                            <input className="input-field" value={form.TEN_KH} onChange={e=>setForm({...form, TEN_KH:e.target.value})} placeholder="Nguyễn Văn A"/>
+                                            <label className="block text-xs font-bold text-slate-500 mb-1">Họ tên khách hàng</label>
+                                            <input className="input-std" value={form.TEN_KH} onChange={e=>setForm({...form, TEN_KH:e.target.value})} placeholder="Nguyễn Văn A" />
                                         </div>
                                         <div>
-                                            <label className="text-xs font-bold text-gray-500">Nội Dung</label>
-                                            <textarea className="input-field" rows="3" value={form.NOI_DUNG} onChange={e=>setForm({...form, NOI_DUNG:e.target.value})} placeholder="Nội dung..."></textarea>
+                                            <label className="block text-xs font-bold text-slate-500 mb-1">Nội dung thu</label>
+                                            <textarea className="input-std" rows="3" value={form.NOI_DUNG} onChange={e=>setForm({...form, NOI_DUNG:e.target.value})} placeholder="Thanh toán tiền điện..."></textarea>
                                         </div>
-                                        <div className="text-xs italic text-gray-400 bg-gray-50 p-2 rounded">
-                                            FMT: {form.SO_TIEN_FMT || '0'} <br/> {form.SO_TIEN_CHU}
+                                        
+                                        {/* Preview Money Logic */}
+                                        <div className="text-xs bg-slate-100 p-2 rounded text-slate-600">
+                                            <div>Format: <b>{form.SO_TIEN_FMT || '0'}</b></div>
+                                            <div className="italic">{form.SO_TIEN_CHU}</div>
                                         </div>
                                     </div>
                                 )}
 
                                 {activeTab === 'json' && (
-                                    <div className="h-full p-2">
+                                    <div className="pt-3 h-full">
                                         <textarea 
                                             value={jsonStr} onChange={e=>setJsonStr(e.target.value)}
-                                            className="w-full h-64 p-3 font-mono text-xs border rounded bg-slate-800 text-green-400 resize-none outline-none"
+                                            className="w-full h-64 p-3 font-mono text-xs border rounded bg-slate-900 text-green-400 resize-none outline-none"
                                             placeholder='[&#10;  { "MA_KH": "KH1", "SO_TIEN": 50000 },&#10;  { "MA_KH": "KH2", "SO_TIEN": 123456 }&#10;]'
                                         ></textarea>
+                                        <div className="text-xs text-slate-400 mt-1">* Tự động làm tròn số tiền khi xử lý</div>
                                     </div>
                                 )}
                             </div>
 
-                            <button onClick={generate} disabled={loading} className="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white font-bold rounded-lg shadow transition">
-                                {loading ? "Đang xử lý..." : "⚡ THỰC HIỆN"}
-                            </button>
-                            <div className="text-center text-xs font-bold text-slate-500">{msg}</div>
+                            {/* 4. Action Buttons */}
+                            <div className="space-y-3 pt-2">
+                                <button onClick={generate} disabled={loading} className={`w-full py-3 rounded-lg font-bold text-white shadow-lg btn flex justify-center items-center gap-2 ${loading ? 'bg-slate-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}>
+                                    {loading ? "⏳ Đang xử lý..." : "⚡ THỰC HIỆN & XEM TRƯỚC"}
+                                </button>
+                                
+                                {msg.text && (
+                                    <div className={`text-center text-sm font-medium p-2 rounded ${msg.type === 'error' ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-700'}`}>
+                                        {msg.text}
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     </div>
 
-                    {/* RIGHT: PREVIEW */}
-                    <div className="w-full md:w-7/12 bg-slate-200 rounded-xl p-4 flex flex-col h-full overflow-hidden">
-                        <div className="flex justify-between items-center mb-2">
-                            <h2 className="text-sm font-bold text-slate-500 uppercase">Xem Trước</h2>
-                            {(previewBlob || zipBlob) && (
-                                <button onClick={download} className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-xs font-bold rounded shadow animate-bounce">
-                                    💾 Tải Xuống {zipBlob ? 'ZIP' : 'DOCX'}
+                    {/* RIGHT CONTENT: Preview */}
+                    <div className="flex-1 bg-slate-100 flex flex-col h-full overflow-hidden relative">
+                        <div className="h-16 bg-white border-b flex justify-between items-center px-6 shrink-0 shadow-sm z-10">
+                            <div className="text-sm font-bold text-slate-400 uppercase tracking-wider">Khu vực Xem trước</div>
+                            {downloadData && (
+                                <button onClick={forceDownload} className="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2 rounded-lg font-bold shadow-lg transform transition active:scale-95 flex items-center gap-2">
+                                    <span>💾 Tải xuống {activeTab === 'json' && jsonStr.includes('[') ? 'ZIP' : 'File'}</span>
                                 </button>
                             )}
                         </div>
-                        <div className="flex-1 overflow-auto flex justify-center pb-20">
-                            <div ref={previewRef} className="preview-container"></div>
+
+                        <div className="flex-1 overflow-auto p-8 flex justify-center">
+                            <div ref={previewRef} className="bg-white shadow-2xl min-h-[297mm] w-[210mm] transition-all duration-500">
+                                {/* Preview content rendered here */}
+                            </div>
+                            {!downloadData && !loading && (
+                                <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                                    <div className="text-6xl mb-4 opacity-20">📄</div>
+                                    <div className="text-slate-400 font-medium">Chưa có kết quả để hiển thị</div>
+                                </div>
+                            )}
                         </div>
                     </div>
-
                 </div>
             );
         }
