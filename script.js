@@ -20,11 +20,33 @@ const processMoney = (val) => {
     if (isNaN(num)) return { raw: 0, fmt: val, text: '' };
 
     num = Math.ceil(num / 1000) * 1000;
-    const fmt = num.toLocaleString('vi-VN'); // VD: 55.000
-    
-    // Đọc số đơn giản (Bạn có thể thêm thư viện n2vi nếu muốn)
+    const fmt = num.toLocaleString('vi-VN');
     const text = `(Bằng chữ: ... đồng)`; 
     return { raw: num, fmt, text };
+};
+
+// --- HÀM VÁ LỖI FILE WORD (QUAN TRỌNG) ---
+// Hàm này sẽ đi sâu vào cấu trúc XML của file Word và hàn gắn các tag bị vỡ
+const patchBrokenTags = (xmlContent) => {
+    // 1. Hàn gắn các thẻ {{ bị tách rời (VD: <w:t>{</w:t>...<w:t>{</w:t>)
+    // Regex tìm kiếm các ký tự XML nằm giữa 2 dấu {
+    let patched = xmlContent.replace(
+        /(<w:t>\{<\/w:t>)([\s\S]*?)(<w:t>\{<\/w:t>)/g, 
+        function(match, start, middle, end) {
+            // Thay thế bằng 1 thẻ {{ duy nhất
+            return `<w:t>{{</w:t>${middle}`; 
+        }
+    );
+
+    // 2. Hàn gắn các thẻ }} bị tách rời
+    patched = patched.replace(
+        /(<w:t>\}<\/w:t>)([\s\S]*?)(<w:t>\}<\/w:t>)/g, 
+        function(match, start, middle, end) {
+            return `${middle}<w:t>}}</w:t>`;
+        }
+    );
+
+    return patched;
 };
 
 // --- XỬ LÝ GIAO DIỆN ---
@@ -89,7 +111,7 @@ document.getElementById('btnProcess').addEventListener('click', async function()
         const isJsonTab = document.getElementById('tabJson').classList.contains('hidden') === false;
 
         if (!isJsonTab) {
-            // Lấy từ Form (ĐÃ CẬP NHẬT ĐỦ TRƯỜNG)
+            // Lấy từ Form
             const ma = document.getElementById('inpMa').value;
             const ten = document.getElementById('inpTen').value;
             const tien = document.getElementById('inpTien').value;
@@ -104,8 +126,8 @@ document.getElementById('btnProcess').addEventListener('click', async function()
                 TEN_KH: ten,
                 SDT: sdt,
                 DIA_CHI: diachi,
-                SO_TIEN_SO: fmt,   // Mapping đúng với template thường dùng
-                SO_TIEN_CHU: text, // Mapping đúng với template thường dùng
+                SO_TIEN_SO: fmt,
+                SO_TIEN_CHU: text,
                 NOI_DUNG: noidung
             }];
         } else {
@@ -127,37 +149,39 @@ document.getElementById('btnProcess').addEventListener('click', async function()
         let firstDocBlob = null;
         let successCount = 0;
 
+        // ** PATCH FILE XML **
+        // Mở file zip và sửa nội dung XML trực tiếp để vá lỗi
+        const pzipMain = new PizZip(fileBuffer);
+        const docXmlPath = "word/document.xml";
+        if (pzipMain.files[docXmlPath]) {
+            try {
+                const originalXml = pzipMain.file(docXmlPath).asText();
+                const fixedXml = patchBrokenTags(originalXml);
+                pzipMain.file(docXmlPath, fixedXml); // Ghi đè file XML đã sửa vào zip
+                log("Đã tự động vá lỗi tag trong file Word.", 'info');
+            } catch (e) {
+                console.warn("Không thể vá lỗi XML:", e);
+            }
+        }
+        // Tạo buffer mới từ file đã vá lỗi
+        const fixedBuffer = pzipMain.generate({type: "arraybuffer"});
+
         dataList.forEach((item, index) => {
             // Mapping lại tiền cho JSON nếu cần
             if (item.SO_TIEN && typeof item.SO_TIEN === 'number') {
                 const { fmt, text } = processMoney(item.SO_TIEN);
-                item.SO_TIEN_SO = fmt; // Tạo trường _SO
-                item.SO_TIEN_CHU = item.SO_TIEN_CHU || text; // Tạo trường _CHU nếu thiếu
+                item.SO_TIEN_SO = fmt; 
+                item.SO_TIEN_CHU = item.SO_TIEN_CHU || text;
             }
 
-            // Load Zip
-            const pzip = new PizZip(fileBuffer);
+            const pzip = new PizZip(fixedBuffer);
             
-            // --- TRY TO CLEAN XML (Sửa lỗi duplicate tags) ---
-            // Bước này cố gắng sửa các tag bị lỗi kiểu {{<tag>MA_KH</tag>}}
-            try {
-                const docXml = pzip.file("word/document.xml").asText();
-                // Regex đơn giản để xóa XML tags nằm giữa {{ và }}
-                // Lưu ý: Đây là biện pháp "chữa cháy", tốt nhất vẫn là sửa file gốc
-                /* Code này sẽ không can thiệp sâu để tránh hỏng file, 
-                   docxtemplater sẽ tự lo liệu nếu config đúng.
-                */
-            } catch(e) {}
-            // ------------------------------------------------
-
             const doc = new window.docxtemplater(pzip, {
                 paragraphLoop: true,
                 linebreaks: true,
-                // Chế độ "Dễ tính": Không báo lỗi nếu thiếu tag, chỉ điền rỗng
                 nullGetter: () => ""
             });
 
-            // Render
             doc.render(item);
 
             const blob = doc.getZip().generate({
@@ -193,12 +217,8 @@ document.getElementById('btnProcess').addEventListener('click', async function()
     } catch (err) {
         log(`LỖI: ${err.message}`, 'error');
         console.error(err);
-        
-        // Gợi ý sửa lỗi cho người dùng
-        if (err.message.includes("duplicate open tags") || err.message.includes("Multi error")) {
-            log("--- HƯỚNG DẪN SỬA LỖI ---", 'error');
-            log("File Word của bạn đang bị lỗi định dạng ẩn (Tags bị chia cắt).", 'error');
-            log("Cách sửa: Mở file Word -> Copy toàn bộ (Ctrl+A, Ctrl+C) -> Dán sang file mới (Ctrl+V) -> Lưu lại và Upload file mới này.", 'error');
+        if (err.properties && err.properties.errors) {
+            err.properties.errors.forEach(e => log(`Chi tiết Word: ${e.properties.explanation}`, 'error'));
         }
     } finally {
         btn.disabled = false;
